@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(Get-ChildItem:*)",
+      "Shell(Where-Object:*)",
+      "Shell(ForEach-Object:*)",
+      "Shell(\", :*)",
+      "Shell(}:*)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}
