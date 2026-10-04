@@ -56,6 +56,10 @@ AI-powered test automation blueprint.
   - [Chapter 11: RAG Implementation](#chapter-11-rag-implementation)
     - [Two workflows, one lesson](#two-workflows-one-lesson)
     - [Why one document per row](#why-one-document-per-row)
+  - [Chapter 12: QABuddy, Hybrid RAG for QA](#chapter-12-qabuddy-hybrid-rag-for-qa)
+    - [Five decisions](#five-decisions)
+    - [Hybrid retrieval, measured](#hybrid-retrieval-measured)
+    - [Top-k cannot prove absence](#top-k-cannot-prove-absence)
 - [License](#license)
 
 ## Overview
@@ -1609,6 +1613,129 @@ same vocabulary.
 > `row["Test Case ID"]` throws a `KeyError` against a header that looks perfectly correct
 > in every editor. Both workflows handle it, `Extract CSV Rows` with `enableBOM: true` and
 > the Code node with `replace(/^﻿/, '')`. In Python it is `encoding="utf-8-sig"`.
+
+### Chapter 12: QABuddy, Hybrid RAG for QA
+
+**Concept:** QABuddy.ai is a self-hosted RAG over everything a QA team owns: the Selenium
+and Playwright frameworks, 500 test cases, Jira bugs, the PRD, meeting notes, Lucid charts
+and Jenkins logs. One question gets one answer with numbered citations to the exact
+ticket, log line or method.
+
+**Why:** chapter 11 ended on its own gotcha: with near-identical records, pure vector
+search stops discriminating. Real QA questions also name things that embeddings blur
+(`VWO-33`, `testLoginPositiveVWO`, build `#142`), span several sources at once, and
+sometimes ask about absence ("which features have no test cases?"), which top-k search
+cannot answer at all.
+
+**Live demo: [qabuddy-ai-nine.vercel.app](https://qabuddy-ai-nine.vercel.app)**
+
+```bash
+git clone --recurse-submodules https://github.com/PramodDutta/AITesterBlueprint4x
+cd AITesterBlueprint4x/chapter_12_RAG_QA_BuddyAI
+./run.sh            # Qdrant + Ollama, ingests on first run, http://localhost:8300
+```
+
+The two framework repos are git submodules; `run.sh` fetches them if you cloned without
+`--recurse-submodules`.
+
+![QABuddy answering an RCA question with citations](chapter_12_RAG_QA_BuddyAI/docs/rca-answer.png)
+
+#### Five decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Embedding model | Qwen3-Embedding-4B on Ollama, 1024 dims | Top-ranked family on MTEB multilingual, reads code, 32K-token input, Apache 2.0 |
+| Vector database | Qdrant | Dense and BM25 sparse vectors plus RRF fusion in one request, payload filters, single binary |
+| Chunking | Along the unit a QA engineer asks about | One row per test case, one chunk per Jira comment, heading-aware PRD sections, AST-aware code, failure windows in logs |
+| Reranker | bge-reranker-v2-m3 | Re-reads the fused top 24 with the question and keeps the best |
+| Answer LLM | gpt-oss-120b on Groq | Fast, cheap, follows "cite or refuse" rules |
+
+Six modes shape both retrieval and the answer: Ask anything, Failure analysis (RCA), Test
+design and gaps, Bug triage, Framework coding help, and Traceability (RTM). The chapter
+[README](chapter_12_RAG_QA_BuddyAI/README.md) has the per-source chunk sizes, the
+preprocessing rules and the deployment plan.
+
+#### Hybrid retrieval, measured
+
+```mermaid
+flowchart LR
+    Q["Question + mode"] --> X["Exact id lookup<br/>VWO-33, LOGIN-002"]
+    Q --> D["Qwen3 dense<br/>1024d"]
+    Q --> B["Code-aware BM25<br/>loginToVWO -> login, vwo"]
+    D --> F{"Qdrant<br/>RRF fusion"}
+    B --> F
+    F --> R["bge-reranker-v2-m3<br/>top 24"]
+    X --> R
+    R --> S["Select: quotas,<br/>source caps, 3.5k tokens"]
+    S --> L["gpt-oss-120b<br/>cite or refuse"]
+    L --> A["Answer with [n] citations<br/>+ retrieval trace"]
+
+    classDef src fill:#57606a,stroke:#24292f,color:#fff
+    classDef ai fill:#1f6feb,stroke:#0b3d91,color:#fff
+    classDef gate fill:#bf8700,stroke:#7a5600,color:#fff
+    classDef out fill:#2da44e,stroke:#0f5323,color:#fff
+    class Q src
+    class D,R,L ai
+    class X,B,F,S gate
+    class A out
+```
+
+Dense search, BM25 and their fusion run as one batched Qdrant request. It also returns each
+retriever's own ranking, which is how the UI can show why every candidate was kept or dropped:
+
+```python
+# qabuddy/store.py: one round trip, three result lists
+reqs = [
+    models.QueryRequest(query=dense, using="dense", limit=prefetch_k, filter=flt, with_payload=False),
+    models.QueryRequest(query=sv, using="bm25", limit=prefetch_k, filter=flt, with_payload=False),
+    models.QueryRequest(
+        prefetch=[
+            models.Prefetch(query=dense, using="dense", limit=prefetch_k, filter=flt),
+            models.Prefetch(query=sv, using="bm25", limit=prefetch_k, filter=flt),
+        ],
+        query=models.FusionQuery(fusion=models.Fusion.RRF),
+        limit=fused_k,
+        with_payload=True,
+    ),
+]
+dense_res, sparse_res, fused_res = client().query_batch_points(s.collection, requests=reqs)
+```
+
+On a 24-question golden set (`./run.sh eval`):
+
+| Retriever | hit@6 | MRR |
+|---|---|---|
+| dense only (Qwen3) | 100% | 0.83 |
+| BM25 only | 100% | 0.88 |
+| hybrid (RRF) | 100% | 0.91 |
+| full (ids + hybrid + rerank) | 100% | 0.91 |
+
+Every retriever finds the answer somewhere in the top 6; they differ in how high they rank
+it. "Is testLoginPositiveVWO flaky?" puts ticket QAB-102 at **#31 by meaning but #2 by
+keyword**: a method name is a string, not a concept.
+
+![Retrieval trace: dense, BM25, RRF and rerank for every candidate](chapter_12_RAG_QA_BuddyAI/docs/retrieval-trace.png)
+
+#### Top-k cannot prove absence
+
+"Which PRD features have no test cases?" retrieves the six most similar rows and never sees
+the missing ones. The fix happens at ingest: QABuddy writes inventory chunks (one
+repository summary, one chunk per test module listing every scenario, one outline per long
+document), and the gap and RTM modes pin them into the context with per-source quotas.
+With the inventory in view the model can say what is missing. On this data it reported
+that **none of the 70 A/B testing cases are automated**.
+
+**Q&A - why use this?**
+- **Q: When is pure vector search enough?** A: For prose questions over prose. As soon as questions carry identifiers (ticket keys, test ids, method names, build numbers), keyword search and exact-id lookup earn their place, and fusion means you never have to pick one.
+- **Q: What does the reranker add if hybrid already finds everything?** A: It decides which 6-8 chunks the LLM actually reads. Retrieval metrics tie here; answers do not, because a cross-encoder reads the question and the chunk together instead of comparing two precomputed vectors.
+- **Q: What's the gotcha?** A: **Groq's on-demand tier allows 8,000 tokens per minute and counts the `max_tokens` reservation**, so one key serves about two answers a minute. QABuddy retries on a 429 and reports the wait separately from latency, but a team needs a paid tier or a self-hosted model.
+
+> **The hosted demo is honest about what it is.** Vercel cannot reach a laptop's Qdrant,
+> Ollama or reranker, so the example questions replay recorded runs of the full pipeline
+> (traces included), and new questions run BM25 in the browser plus a rate-limited Groq
+> function, labelled as such in the UI. The DigitalOcean deployment (Docker Compose plus
+> Caddy for HTTPS and a login) is in [`deploy/DEPLOY.md`](chapter_12_RAG_QA_BuddyAI/deploy/DEPLOY.md):
+> written, not yet run end to end.
 
 ## License
 
