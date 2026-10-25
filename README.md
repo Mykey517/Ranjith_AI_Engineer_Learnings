@@ -60,6 +60,25 @@ AI-powered test automation blueprint.
     - [Five decisions](#five-decisions)
     - [Hybrid retrieval, measured](#hybrid-retrieval-measured)
     - [Top-k cannot prove absence](#top-k-cannot-prove-absence)
+  - [Chapter 13: MCP Basics](#chapter-13-mcp-basics)
+    - [Tools, resources and prompts](#tools-resources-and-prompts)
+    - [25+ MCP ideas for QA](#25-mcp-ideas-for-qa)
+  - [Chapter 14: MCP Servers by Vibe Coding](#chapter-14-mcp-servers-by-vibe-coding)
+    - [Data first, then tools](#data-first-then-tools)
+    - [The 21 tools](#the-21-tools)
+    - [Connect from any MCP client](#connect-from-any-mcp-client)
+    - [Sharing it with students over a tunnel](#sharing-it-with-students-over-a-tunnel)
+    - [TestSkill Finder MCP: 100 QA skills for any LLM](#testskill-finder-mcp-100-qa-skills-for-any-llm)
+    - [How skill search works](#how-skill-search-works)
+    - [Files in this chapter](#files-in-this-chapter)
+  - [Chapter 15: Python and PyTest](#chapter-15-python-and-pytest)
+    - [The exercises so far](#the-exercises-so-far)
+    - [Identifier rules](#identifier-rules)
+    - [Literals and comments (ex_03)](#literals-and-comments-ex_03)
+    - [Data types, input and built-ins (ex_04)](#data-types-input-and-built-ins-ex_04)
+    - [Operators (ex_05)](#operators-ex_05)
+    - [Conditions (ex_06)](#conditions-ex_06)
+  - [Chapters 16-21: coming next](#chapters-16-21-coming-next)
 - [License](#license)
 
 ## Overview
@@ -1736,6 +1755,720 @@ that **none of the 70 A/B testing cases are automated**.
 > function, labelled as such in the UI. The DigitalOcean deployment (Docker Compose plus
 > Caddy for HTTPS and a login) is in [`deploy/DEPLOY.md`](chapter_12_RAG_QA_BuddyAI/deploy/DEPLOY.md):
 > written, not yet run end to end.
+
+What is left: [`Todo_List.md`](chapter_12_RAG_QA_BuddyAI/Todo_List.md) is the phase roadmap
+(auto-ingestion, caching, pipeline tests, cloud deployment, then Figma and screenshots), and
+[`PENDING_TASKS.md`](chapter_12_RAG_QA_BuddyAI/PENDING_TASKS.md) breaks the open work into 24
+prioritised tasks, each with a "done when".
+
+### Chapter 13: MCP Basics
+
+**Concept:** MCP (Model Context Protocol) is an open standard that connects AI applications
+(Claude Code, Codex, Cursor, Windsurf, Kiro) to external systems (Jira, Slack, Playwright,
+Selenium, GitHub, databases). An **MCP server** exposes tools, resources and prompts once, and
+every MCP-capable app can use them.
+
+**Why:** an LLM on its own is only a brain with knowledge. An AI agent is brain + memory +
+tools, and MCP is how it gets the tools without a custom integration for every app and every
+system.
+
+The class notes are in [`MCP_Inspector.md`](chapter_13_MCP_Basics/MCP_Inspector.md): MCP vs API,
+the host/client/server roles, how to install the Playwright MCP, two ways to build your own
+(vibe coding with prompts, or Python with FastMCP), the TestCreator MCP plan, and 25+ MCP ideas.
+
+```mermaid
+flowchart LR
+    subgraph HOST["MCP host: Claude Code, Cursor, VS Code"]
+        LLM["LLM<br/>the brain"] --> CL["MCP client<br/>1:1 per server"]
+    end
+    CL --> S["MCP server"]
+    S --> T["Tools<br/>verbs, like POST"]
+    S --> R["Resources<br/>nouns, like GET"]
+    S --> P["Prompts<br/>reusable recipes"]
+    T --> EXT["External systems<br/>Playwright, Jira, DB"]
+
+    classDef src fill:#57606a,stroke:#24292f,color:#fff
+    classDef ai fill:#1f6feb,stroke:#0b3d91,color:#fff
+    classDef gate fill:#bf8700,stroke:#7a5600,color:#fff
+    classDef out fill:#2da44e,stroke:#0f5323,color:#fff
+    class LLM ai
+    class CL,S gate
+    class T,R,P ai
+    class EXT out
+```
+
+#### Tools, resources and prompts
+
+| Primitive | Think of it as | Example | API analogy |
+|---|---|---|---|
+| Tool | A verb the agent executes | create a Jira issue, run a test, click a button | POST |
+| Resource | A read-only noun for context | a file list, today's test plan, a style guide | GET |
+| Prompt | A reusable recipe on the server | `/test-review`, `/bug-triage` with arguments | none, user-triggered |
+
+The fastest way to feel MCP is to add an existing server. The Playwright MCP gives an AI a real
+browser:
+
+```bash
+# Claude Code
+claude mcp add playwright -- npx @playwright/mcp@latest
+```
+
+```jsonc
+// .vscode/mcp.json (VS Code)
+{
+  "servers": {
+    "playwright": { "type": "stdio", "command": "npx", "args": ["@playwright/mcp@latest"] }
+  }
+}
+```
+
+#### 25+ MCP ideas for QA
+
+The notes list 25 servers worth building, in three groups:
+- **Manual tester wins:** test case generator, test repository search, bug report writer, requirement ambiguity checker, test data factory.
+- **Automation tester wins:** flaky test intelligence, failure RCA, locator healer, API contract server, test impact analysis.
+- **Team-level servers:** a test management bridge across TestRail, Zephyr, Xray and Qase; QA metrics; a shared QA prompt library.
+
+Chapter 14 builds two of them.
+
+**Q&A - why use this?**
+- **Q: Why MCP and not just an API?** A: An API is for programs you write against it. MCP is for AI apps: one server works in Claude Code, Cursor and Codex unchanged, and the model discovers what it can do from the tool descriptions.
+- **Q: Should my feature be a tool, a resource or a prompt?** A: A tool if it does something, a resource if it only provides context to read, a prompt if it is a recipe a person starts on purpose.
+- **Q: What's the gotcha?** A: The model chooses tools by reading their names and descriptions. Vague or overlapping tools make it pick the wrong one, so tool design matters as much as the code behind it.
+
+### Chapter 14: MCP Servers by Vibe Coding
+
+This chapter builds two MCP servers by talking to Claude Code, from first prompt to pushed code:
+**TestCreator MCP** turns a 5,000-row test case CSV into 21 tools, and **TestSkill Finder MCP**
+lets any LLM search and use a library of 100 QA agent skills. Every prompt is in
+[`02_prompt.md`](chapter_14_MCP_Create_VIBE/02_prompt.md).
+
+![TestCreator MCP: 5,000 test cases, 21 tools, top tests, smoke suites and Gherkin](chapter_14_MCP_Create_VIBE/assets/testcase-creator-hero.png)
+
+**Concept:** TestCreator MCP (TC MCP) is an MCP server, built with FastMCP 4.1, that turns a
+5,000-row VWO test case CSV into 21 tools any MCP client can call. You can find tests by
+module, priority, type, browser or device, rank what to run first, build smoke, sanity and
+regression suites, find duplicates and coverage gaps, write new tests in the catalog format,
+and export to Jira CSV, Markdown, Gherkin or Playwright stubs.
+
+**Why:** a test catalog is too big to paste into a chat (about 950k tokens). Tools let the
+assistant ask for exactly the 20 rows and the exact counts it needs, and any QA or dev can
+share the same server.
+
+The design, from data profile to phased build plan, is in
+[`01_TestCreatorMCP.plan.md`](chapter_14_MCP_Create_VIBE/01_TestCreatorMCP.plan.md).
+
+```bash
+cd chapter_14_MCP_Create_VIBE/testcase-creator-mcp
+uv sync && uv run pytest -q                        # 33 tests
+uv run tc-mcp --transport http --port 8000        # http://127.0.0.1:8000/mcp
+npx @modelcontextprotocol/inspector --transport http --server-url http://127.0.0.1:8000/mcp
+```
+
+#### Data first, then tools
+
+The first prompt said "don't code", so the CSV was profiled before any tool was designed.
+What it found shaped the server:
+
+| Finding | Design response |
+|---|---|
+| Only 1,520 unique scenarios behind 5,000 rows, 466 exact duplicates | "Top N" keeps the best variant per scenario and spreads picks across features, so the top 10 is not 10 browser copies of one test. `find_duplicate_tests` lists them for cleanup |
+| 415 Deprecated tests | Hidden by default in every tool, unless you ask for them |
+| `A/B Testing` labels saved as `a`, `regression` doubled on Regression rows | Labels are repaired at load time. The source CSV is never edited |
+| About 190 tokens per full row | Responses are capped at 100 compact rows or 25 full rows, with pagination |
+| Users type `ab testing`, `sdk`, `safari`, `ios` | A resolver maps loose input to exact values and answers typos with "Did you mean 'Reports'?" |
+
+```mermaid
+flowchart LR
+    C["MCP client<br/>Inspector, Claude Code, VS Code"] --> T{"stdio or<br/>stateless HTTP"}
+    T --> TL["21 tools<br/>FastMCP 4.1"]
+    TL --> RS["Resolver<br/>'ab' -> A/B Testing"]
+    RS --> RP["Repository<br/>5,000 rows in memory"]
+    CSV["vwo_5000_test_cases.csv<br/>read-only"] --> RP
+    OV["tc_additions.csv<br/>overlay for writes"] --> RP
+    RP --> RK["Ranking<br/>priority + status + type<br/>minus feature penalty"]
+    RK --> O["Ranked rows<br/>with rank_reason"]
+
+    classDef src fill:#57606a,stroke:#24292f,color:#fff
+    classDef ai fill:#1f6feb,stroke:#0b3d91,color:#fff
+    classDef gate fill:#bf8700,stroke:#7a5600,color:#fff
+    classDef out fill:#2da44e,stroke:#0f5323,color:#fff
+    class C,CSV,OV src
+    class TL,RP ai
+    class T,RS,RK gate
+    class O out
+```
+
+A tool is a plain Python function. FastMCP turns the type hints into the JSON schema the
+client sees, and the docstring into the description the LLM uses to choose the tool:
+
+```python
+# src/tc_mcp/tools/search.py (trimmed)
+@mcp.tool(annotations=READ_ONLY, tags={"search", "planning"})
+def get_top_tests_for_module(
+    module: Annotated[str, Field(description="Module name, e.g. 'Reports', 'A/B Testing'. Aliases like 'ab', 'sdk' work.")],
+    count: Annotated[int, Field(ge=1, le=50, description="How many tests to return (1-50).")] = 10,
+    browser: Annotated[str | None, Field(description="Only this browser, e.g. 'Safari 19'.")] = None,
+) -> dict[str, Any]:
+    """Answer 'which tests should I run first for <module>?'. Returns a ranked shortlist,
+    each row with a score and a rank_reason."""
+    r = repo()
+    resolved = resolve_module(module, r.modules)
+    flt = TestFilter(module=resolved, browser=browser, status=["Ready", "Automated"], include_duplicates=False)
+    rows, applied = r.filter(flt)
+    picks = ranking.rank(rows, count, unique_scenarios=True)
+    return {"module": resolved, "results": [p.as_dict() for p in picks]}
+```
+
+#### The 21 tools
+
+| Group | Tools |
+|---|---|
+| Discovery | `list_modules`, `get_filter_options`, `get_test_stats` |
+| Find | `get_test_case`, `search_test_cases`, `search_by_keyword`, `get_top_tests_for_module`, `get_similar_test_cases` |
+| Planning | `build_test_suite`, `get_browser_device_matrix`, `get_automation_candidates`, `estimate_execution_effort` |
+| Quality | `find_duplicate_tests`, `find_coverage_gaps`, `validate_test_case` |
+| Authoring | `get_test_case_template`, `add_test_cases`, `update_test_case` |
+| Export | `export_test_cases`, `convert_to_gherkin`, `generate_automation_stub` |
+
+There are also 4 resources (`tc://schema`, `tc://modules`, `tc://stats/summary`,
+`tc://test/{issue_key}`) and 3 prompts (`generate_test_cases`, `plan_release_run`,
+`review_module_coverage`). The two write tools are hidden unless the server starts with
+`--allow-write`, and even then they default to `dry_run=true`.
+
+#### Connect from any MCP client
+
+| Client | Connection |
+|---|---|
+| MCP Inspector | `npx @modelcontextprotocol/inspector --transport http --server-url http://127.0.0.1:8000/mcp` |
+| Claude Code | `claude mcp add tc-mcp -- uv run --directory /ABS/PATH/chapter_14_MCP_Create_VIBE/testcase-creator-mcp tc-mcp` |
+| VS Code (`.vscode/mcp.json`) | `{ "servers": { "tc-mcp": { "type": "http", "url": "http://127.0.0.1:8000/mcp" } } }` |
+| No clone needed | `uvx --from "git+https://github.com/PramodDutta/AITesterBlueprint4x#subdirectory=chapter_14_MCP_Create_VIBE/testcase-creator-mcp" tc-mcp` |
+
+Calling it from Python, with output from the real data:
+
+```python
+import asyncio
+from fastmcp import Client
+
+async def main():
+    async with Client("http://127.0.0.1:8000/mcp") as client:
+        top = await client.call_tool("get_top_tests_for_module", {"module": "Reports", "count": 3})
+        for row in top.data["results"]:
+            print(row["key"], row["rank_reason"])
+
+asyncio.run(main())
+# VWO-1029 Highest · Ready · Functional (score 56); 1st pick for feature 'scheduled email'
+# VWO-3012 Highest · Ready · Functional (score 56); 1st pick for feature 'segment report'
+# VWO-4898 Highest · Ready · Functional (score 56); 1st pick for feature 'report export'
+```
+
+The chapter [README](chapter_14_MCP_Create_VIBE/testcase-creator-mcp/README.md) has every
+other option: Claude Desktop, Cursor, and a shared server with a bearer token.
+
+#### Sharing it with students over a tunnel
+
+A Cloudflare quick tunnel gives the local server a public HTTPS URL for as long as it runs:
+
+```bash
+uv run tc-mcp --transport http --port 8000        # read-only by default
+cloudflared tunnel --url http://127.0.0.1:8000    # prints https://<random>.trycloudflare.com
+```
+
+In class, 14 students connected with MCP clients, and about 20 opened the link in a browser
+and got `Bad Request: Missing session ID`. An MCP URL is not a web page: a browser sends a
+plain `GET`, which the MCP transport rejects. There were two fixes. HTTP mode now runs
+**stateless** (the tools keep no per-user state, so no session ID is needed), and a small ASGI
+middleware ([`landing.py`](chapter_14_MCP_Create_VIBE/testcase-creator-mcp/src/tc_mcp/landing.py))
+shows browsers a "how to connect" page. Stopping the tunnel takes the URL offline immediately.
+
+**Q&A - why use this?**
+- **Q: Why not just give the LLM the CSV?** A: 5,000 rows is about 950k tokens. Through tools, a question like "top 5 for Reports on Safari" costs one call and about 1k tokens, and counts come from code instead of the model's guess.
+- **Q: Why does the server never call an LLM?** A: The client's model already reasons and writes. Keeping the server deterministic means it is free, works offline, needs no API keys to share, and gives the same answer every time.
+- **Q: What's the gotcha?** A: Duplicates. Sorting 5,000 rows by priority gives you the same scenario on four browsers. Profile the data before designing tools: the 1,520 unique scenarios, not the 5,000 rows, are what the ranking has to work with.
+
+#### TestSkill Finder MCP: 100 QA skills for any LLM
+
+![TestSkill Finder MCP: 100 QA skills, find the right skill, use it from any LLM](chapter_14_MCP_Create_VIBE/assets/testskill-finder-hero.png)
+
+**Concept:** TestSkill Finder MCP serves a folder of 100 agent skills (each a `SKILL.md` with
+YAML frontmatter and instructions) to any MCP client. It searches them by keyword or by a
+plain-English task, chains them across the STLC, and exposes every skill as a prompt and a
+resource. The [`skills/`](chapter_14_MCP_Create_VIBE/testskill-finder-mcp/skills/) folder is
+the source of truth, and the server reloads whenever it changes.
+
+**Why:** a skill library only helps if people can find the right skill at the moment they
+need it, from whatever assistant they use. "Test case creator" should land on
+`test-case-writer` even though no word matches exactly.
+
+```bash
+cd chapter_14_MCP_Create_VIBE/testskill-finder-mcp
+uv sync && uv run pytest -q                                   # 42 tests
+uv run testskill-finder-mcp --transport http                  # http://127.0.0.1:8110/mcp
+npx @modelcontextprotocol/inspector --transport http --server-url http://127.0.0.1:8110/mcp
+```
+
+**Where the 100 skills come from:**
+- **36 are synced** from [PramodDutta/skillmasterclass](https://github.com/PramodDutta/skillmasterclass/tree/main/skillmasterclass/skills) by the server's own `tsf-mcp sync`: 14 STLC skills, 11 Playwright and 11 Selenium.
+- **64 were added** in the same format: 18 more STLC skills, plus packs for Cypress (8), API (6), performance (6), security (6), LLM evaluation (7), AI agents (5), MCP (5) and automation (3).
+- The full list is in [`CATALOG.md`](chapter_14_MCP_Create_VIBE/testskill-finder-mcp/skills/CATALOG.md).
+
+![STLC Skill Map: the 7 phases the lifecycle skills follow](chapter_14_MCP_Create_VIBE/assets/stlc-skill-map.png)
+
+```mermaid
+flowchart LR
+    GH["skillmasterclass<br/>36 upstream skills"] -->|tsf-mcp sync| SK["skills/ folder<br/>100 SKILL.md"]
+    NEW["64 new skills<br/>same format"] --> SK
+    SK --> CAT["Catalog<br/>parse + auto-reload"]
+    CAT --> IDX["Search index<br/>stems, synonyms, field weights"]
+    IDX --> T["15 tools"]
+    CAT --> P["103 prompts<br/>one per skill"]
+    CAT --> R["Resources<br/>skill://name"]
+    T --> LLM["Any LLM<br/>Claude, Copilot, Cursor"]
+    P --> LLM
+    R --> LLM
+
+    classDef src fill:#57606a,stroke:#24292f,color:#fff
+    classDef ai fill:#1f6feb,stroke:#0b3d91,color:#fff
+    classDef gate fill:#bf8700,stroke:#7a5600,color:#fff
+    classDef out fill:#2da44e,stroke:#0f5323,color:#fff
+    class GH,NEW src
+    class T,P,R ai
+    class SK,CAT,IDX gate
+    class LLM out
+```
+
+| Group | Tools |
+|---|---|
+| Discover | `list_categories`, `list_skills`, `get_catalog_stats` |
+| Find | `search_skills`, `find_skill_for_task`, `get_skill`, `get_skill_file`, `get_related_skills`, `compare_skills` |
+| Workflow | `suggest_skill_chain`, `get_stlc_pipeline`, `export_skill` (Claude Code, Copilot, Cursor) |
+| Quality and write | `validate_skills`, plus `create_skill` and `sync_skills_from_github` when started with `--allow-write` |
+
+Asking from Python, with output from the live server:
+
+```python
+import asyncio
+from fastmcp import Client
+
+async def main():
+    async with Client("http://127.0.0.1:8110/mcp") as client:
+        hits = await client.call_tool("find_skill_for_task", {"task": "evaluate my RAG chatbot answers with DeepEval", "top_k": 2})
+        for row in hits.data["results"]:
+            print(row["rank"], row["name"], "|", row["category"])
+
+asyncio.run(main())
+# 1 rag-evaluation-designer | LLM Evaluation
+# 2 deepeval-test-writer | LLM Evaluation
+```
+
+#### How skill search works
+
+| Query | Top result | Why it matches |
+|---|---|---|
+| Playwright API | `pw-api-tester` | `pw` is expanded to playwright, and both words are in the name |
+| test case creator | `test-case-writer` | creator, writer and generator are one synonym group after stemming |
+| test plan creator | `test-plan-generator` | the same synonym group, plus "test plan" in the name |
+| test strategy | `test-strategy-designer` | exact name match, which weighs 6x the body |
+| k6 load test | `k6-load-test-generator` | `k6` and `load` are in the performance synonym group |
+
+Each skill is scored as term weight x IDF x field weight. The field weights are:
+
+| Field | Weight |
+|---|---|
+| Name | 6 |
+| Title | 4 |
+| Trigger phrases | 3 |
+| Category | 3 |
+| Description | 2 |
+| When to use | 1.5 |
+| Body | 0.5 |
+
+That score is then scaled by how many of your own words matched. `find_skill_for_task` also
+compares your sentence with each skill's quoted "Use when ..." phrases. The 17 golden queries
+above are pinned in tests, so a change to the scoring that breaks them fails the build.
+
+**Q&A - why use this?**
+- **Q: Why an MCP server instead of copying skills into `~/.claude/skills`?** A: Installed skills live on one machine and work with one agent. The server gives one searchable catalog to Claude, Copilot, Cursor or any LLM. `export_skill` still produces the folder, Copilot prompt file or Cursor rule when you want a skill installed.
+- **Q: How do I add my own skill?** A: Drop a folder with a `SKILL.md` into the right phase or `framework-packs/<pack>-pack/` and run `uv run tsf-mcp validate`, or call `create_skill` on a server started with `--allow-write`. The server picks it up without a restart, and the skill gets its own prompt.
+- **Q: What's the gotcha?** A: Upstream skills don't all share one exact layout (`test-plan-generator` writes "Workflow (follow in order)" with `### 1.` steps), so the parser matches headings by prefix. Sync also downloads files from the internet: it only writes inside `skills/`, refuses path traversal, never touches local skills, and never runs the scripts it downloads.
+
+#### Files in this chapter
+
+| File | What it is |
+|---|---|
+| [`00_Objective.md`](chapter_14_MCP_Create_VIBE/00_Objective.md) | The goal: tests by priority, module, min/max limits, top tests per module |
+| [`01_TestCreatorMCP.plan.md`](chapter_14_MCP_Create_VIBE/01_TestCreatorMCP.plan.md) | Data profile, the 21-tool catalog, ranking formula, sharing options, phases |
+| [`02_prompt.md`](chapter_14_MCP_Create_VIBE/02_prompt.md) | Every prompt used to build both servers, in order, with what happened |
+| [`data/vwo_5000_test_cases.csv`](chapter_14_MCP_Create_VIBE/data/vwo_5000_test_cases.csv) | The catalog: 5,000 tests, 17 modules, 72 features |
+| [`testcase-creator-mcp/`](chapter_14_MCP_Create_VIBE/testcase-creator-mcp/) | The FastMCP server: `src/tc_mcp/` (tools, repository, ranking, validation) and `tests/` |
+| [`learnings/2026-10-10-csv-catalog-to-mcp-server.md`](learnings/2026-10-10-csv-catalog-to-mcp-server.md) | The approach and judgment calls, written down for reuse |
+| [`testskill-finder-mcp/`](chapter_14_MCP_Create_VIBE/testskill-finder-mcp/) | The second server: `src/tsf_mcp/` (catalog, search, sync, tools, prompts) and `tests/` |
+| [`testskill-finder-mcp/skills/`](chapter_14_MCP_Create_VIBE/testskill-finder-mcp/skills/) | The source of truth: 100 skills across 7 STLC phases and 10 packs, plus `CATALOG.md` |
+| [`assets/`](chapter_14_MCP_Create_VIBE/assets/) | Three hand-drawn images rendered with Codex, with the briefs used to render them |
+| [`learnings/2026-10-10-skill-library-mcp.md`](learnings/2026-10-10-skill-library-mcp.md) | How the skill finder was built: parallel writers, golden queries, sync safety |
+
+### Chapter 15: Python and PyTest
+
+**Concept:** Python foundations for testers, as small numbered scripts you run one by one:
+printing, comments, keywords, identifiers, literals, variables, data types, user input,
+operators and conditions, before moving on to PyTest.
+
+**Why:** everything from here on (FastMCP in chapter 14, CrewAI, LangChain, LangGraph, DeepEval)
+is Python, so the basics have to be automatic first.
+
+```bash
+cd chapter_15_Python_PyTest
+python3 ex_01_Python_Basics/003_PrintCommand.py
+
+# scripts that call input() wait for you to type; pipe the answers in to run them unattended
+printf '10\n12\n11\n' | python3 ex_06_Conditions/46.py     # prints 12
+```
+
+#### The exercises so far
+
+| Folder | Scripts | Covers |
+|---|---|---|
+| [`ex_01_Python_Basics/`](chapter_15_Python_PyTest/ex_01_Python_Basics/) | 001-003 | `print()`, comments, `sep` and `end` |
+| [`ex_02_Keywords_Identifier/`](chapter_15_Python_PyTest/ex_02_Keywords_Identifier/) | 004-015 | keywords (`keyword.kwlist`), identifiers, variables, `type()`, dynamic typing, complex numbers, multiple assignment, operator precedence (BODMAS), `max()`/`min()`, string + int |
+| [`ex_03_Literals/`](chapter_15_Python_PyTest/ex_03_Literals/) | 16-18 | literals, `#` comments, triple-quoted blocks |
+| [`ex_04_Literals_DT_UI_BF/`](chapter_15_Python_PyTest/ex_04_Literals_DT_UI_BF/) | 19-30 | data types, user input (`input()`), built-in functions (`max`, `min`, `pow`, `abs`, `len`), strings and `+`, binary/octal/hex/complex literals, escape sequences, raw strings, two practice tasks |
+| [`ex_05_Operators/`](chapter_15_Python_PyTest/ex_05_Operators/) | 31-43 | arithmetic, comparison, logical, power, `+=` and friends, ternary, membership (`in`), the `math` module |
+| [`ex_06_Conditions/`](chapter_15_Python_PyTest/ex_06_Conditions/) | 44-46 | `if`/`else`, nested `if`, `if`/`elif`/`else` |
+
+```mermaid
+flowchart LR
+    A["ex_01<br/>print, comments,<br/>sep and end"] --> B["ex_02<br/>keywords, identifiers,<br/>variables, type()"]
+    B --> C["ex_03<br/>literals and<br/>comments"]
+    C --> D["ex_04<br/>data types, input(),<br/>built-ins, strings"]
+    D --> E["ex_05<br/>operators"]
+    E --> F["ex_06<br/>if, elif, else"]
+    F --> G["Next: PyTest"]
+
+    classDef src fill:#57606a,stroke:#24292f,color:#fff
+    classDef ai fill:#1f6feb,stroke:#0b3d91,color:#fff
+    classDef gate fill:#bf8700,stroke:#7a5600,color:#fff
+    classDef out fill:#2da44e,stroke:#0f5323,color:#fff
+    class A,B src
+    class C,D ai
+    class E,F gate
+    class G out
+```
+
+Three ideas from the scripts, with the output they really print:
+
+```python
+# 003_PrintCommand.py: sep joins the values, end replaces the newline
+print("Hello", "World", "TheTestingAcademy", sep="*")   # Hello*World*TheTestingAcademy
+print("*", "*", sep="-", end="\t")                      # *-*  then a tab, no newline
+print("*", "*", sep="_")                                # *_*  on the same line
+
+# 008_Dynamic_Tye.py: a name can point to any type; type() shows the current one
+age = 98
+print(type(age))        # <class 'int'>
+age = "Pramod"
+print(type(age))        # <class 'str'>
+
+# 015_IQ.py: str + int is an error, convert first
+# print("Hello" + 15)   # TypeError: can only concatenate str (not "int") to str
+print("Hello" + str(15))  # Hello15
+```
+
+`013_MathIQ.py` ends with `"PRAMOD" + 10 + 20` on purpose, to show that `TypeError`.
+
+#### Identifier rules
+
+[`00_RULE.md`](chapter_15_Python_PyTest/ex_02_Keywords_Identifier/00_RULE.md) covers the
+7 rules plus PEP 8 naming:
+- Use only letters, digits and `_`, and never start with a digit.
+- A name can't be a keyword, and names are case sensitive.
+- There's no length limit, and `_` on its own is a valid name.
+- Don't shadow built-ins such as `list`.
+- Use `snake_case` for variables, `UPPER_SNAKE_CASE` for constants and `PascalCase` for classes.
+
+**Q&A - why use this?**
+- **Q: Why can `age` hold 98 and then "Pramod"?** A: Python is dynamically typed. A variable is just a name for the last value assigned, and `type()` tells you what it holds right now.
+- **Q: How do I know if a name is allowed?** A: Letters, digits and underscore, not starting with a digit, and not a keyword. `keyword.iskeyword("class")` returns `True`, so `class_name` is the usual workaround.
+- **Q: What's the gotcha?** A: Python never converts types for you in `+`. `"PRAMOD" + 10` raises `TypeError`, so convert with `str()` first. Naming a variable `list` also silently breaks `list()` for the rest of the file.
+
+#### Literals and comments (ex_03)
+
+**Concept:** A literal is a fixed value written straight into the code, like `20`, `"Pramod"`
+or `True`. A comment is text Python skips: `#` for one line, and a triple-quoted block for
+several lines.
+
+**Why:** literals are how test data gets into a script, and comments are where you leave the
+author, the intent, or switch code off while you debug.
+
+```mermaid
+flowchart LR
+    L["A line of code"] --> H{"Starts with #?"}
+    H -->|Yes| C1["Comment<br/>ignored"]
+    H -->|No| T{"Bare triple-quoted<br/>string?"}
+    T -->|Yes| C2["String literal<br/>built, then thrown away"]
+    T -->|No| R["Runs<br/>age = 65"]
+
+    classDef src fill:#57606a,stroke:#24292f,color:#fff
+    classDef ai fill:#1f6feb,stroke:#0b3d91,color:#fff
+    classDef gate fill:#bf8700,stroke:#7a5600,color:#fff
+    classDef out fill:#2da44e,stroke:#0f5323,color:#fff
+    class L src
+    class H,T gate
+    class C1,C2 ai
+    class R out
+```
+
+```python
+# 16_Literal.py: three literals, three types
+age = 20          # int
+name = "Pramod"   # str
+b = True          # bool
+
+# 18_MC.py: an end-of-line # comment, then a triple-quoted block Python skips
+age = 65  # int
+"""
+This is multi comment
+1. Author- Pramod Dutta
+2. Information
+3. Print the age of pramod
+"""
+print(age)        # 65
+```
+
+**Q&A - why use this?**
+- **Q: When do I use `#` and when triple quotes?** A: `#` for a short note on its own line or at the end of one. Triple quotes for a block, like the author header in `18_MC.py`, or to switch off several lines at once, as `17_Multi_Commnet.py` does with `age = 65` and `print(type(age))`.
+- **Q: Is a triple-quoted block really a comment?** A: Not quite. It is a string literal that nothing stores, so Python builds it and drops it. As the first line of a function it becomes the docstring that `help()` shows.
+- **Q: What's the gotcha?** A: A triple-quoted block has to respect indentation. Put one at column 0 inside an `if` body and the next indented line raises `IndentationError: unexpected indent`. A `#` comment can sit at any indent.
+
+#### Data types, input and built-ins (ex_04)
+
+**Concept:** Every value has a type (`int`, `float`, `str`, `bool`, `complex`) and `type()`
+tells you which one. `input()` reads what the user types, and built-in functions such as
+`max()`, `min()`, `pow()`, `abs()` and `len()` ship with Python, no import needed. (The folder
+name is short for Literals, Data Types, User Input, Built-in Functions.)
+
+**Why:** test data arrives as text from users, files and APIs, so you have to know which type
+you are holding and convert it before you do math with it.
+
+```mermaid
+flowchart LR
+    U["User types 4 and 5"] --> I["input()<br/>always returns str"]
+    I --> S["'4', '5'"]
+    S --> C["int()"]
+    C --> N["4, 5"]
+    N --> OK["num1 + num2<br/>9"]
+    S -.->|"skip int()"| X["'4' + '5'<br/>'45'"]
+
+    classDef src fill:#57606a,stroke:#24292f,color:#fff
+    classDef ai fill:#1f6feb,stroke:#0b3d91,color:#fff
+    classDef gate fill:#bf8700,stroke:#7a5600,color:#fff
+    classDef out fill:#2da44e,stroke:#0f5323,color:#fff
+    classDef bad fill:#cf222e,stroke:#82071e,color:#fff
+    class U src
+    class I,C gate
+    class S,N ai
+    class OK out
+    class X bad
+```
+
+| Literal in `26_Literals.py` | Value | `type()` |
+|---|---|---|
+| `89` | 89 | `int` (base 10) |
+| `0b1010` | 10 | `int` (binary, base 2) |
+| `0o130` | 88 | `int` (octal, base 8) |
+| `0x12c` | 300 | `int` (hex, base 16) |
+| `3.14` | 3.14 | `float` |
+| `"Pramod"` | Pramod | `str` |
+| `True` | True | `bool` |
+| `1 + 7j` | (1+7j) | `complex` |
+
+```python
+# 22_UI_IQ.py: input() gives a str, so convert before adding
+num1 = int(input("Enter num 1 -> "))   # 4
+num2 = int(input("Enter num 2 -> "))   # 5
+print(num1 + num2)                     # 9 (without int() you get "45")
+
+# 19.py and 20_Built.py: built-ins, no import needed
+print(max(45, 65), min(45, 65))        # 65 45
+print(pow(2, 3), abs(-10))             # 8 10
+
+# 23_String.py: strings have methods
+name = "Pramod"
+print(len(name), name.upper())         # 6 PRAMOD
+
+# 27_Literal._ESCAPE.py and 28_String.py: escape sequences, and raw strings that ignore them
+print("Hello\tWorld")                  # Hello   World (a tab)
+print("Hello\bWorld")                  # HellWorld in a terminal: \b steps back one char
+print(r"C:\pramod\n.txt")              # C:\pramod\n.txt, the \n stays as text
+```
+
+Two practice tasks close the folder. Both files hold only the brief:
+[`29_Task1.py`](chapter_15_Python_PyTest/ex_04_Literals_DT_UI_BF/29_Task1.py) (read 3 numbers,
+print the sum, difference, product and quotient) and
+[`30_Task.py`](chapter_15_Python_PyTest/ex_04_Literals_DT_UI_BF/30_Task.py) (read 2 numbers,
+print quotient and remainder: 15 and 2 give 7 and 1). The `//` and `%` operators in ex_05
+solve the second one.
+
+**Q&A - why use this?**
+- **Q: Why does adding two inputs give "45" instead of 9?** A: `input()` always returns a `str`, and `+` on strings joins them. Wrap each call in `int()`, as `22_UI_IQ.py` does.
+- **Q: Single or double quotes?** A: No difference: `'C'` and `"C"` are both `<class 'str'>`, and Python has no separate char type. Use the other kind when the text contains a quote: `"it's"`.
+- **Q: What's the gotcha?** A: Backslashes in Windows paths. In `"C:\pramod\n.txt"` the `\n` turns into a newline, so use a raw string `r"C:\pramod\n.txt"`. Conversion has limits too: `int("90")` works, `int("9.5")` raises `ValueError`.
+
+#### Operators (ex_05)
+
+**Concept:** Operators combine values. Python has arithmetic (`+ - * / // % **`), comparison
+(`== != > < >= <=`), logical (`and or not`), assignment (`= += -= *=`), membership
+(`in`, `not in`), and a one-line ternary: `a if condition else b`.
+
+**Why:** every test assertion is an operator underneath: `actual == expected`,
+`"Welcome" in title`, `status >= 200 and status < 300`.
+
+```mermaid
+flowchart LR
+    V["Values<br/>a, b = 10, 3"] --> AR["Arithmetic<br/>+ - * / // % **"]
+    V --> CO["Comparison<br/>== != > < >= <="]
+    V --> ME["Membership<br/>in, not in"]
+    AR --> NUM["A number<br/>13, 3, 1, 1000"]
+    CO --> B["True or False"]
+    ME --> B
+    B --> LO["Logical<br/>and, or, not"]
+    LO --> USE["if / ternary / assert"]
+
+    classDef src fill:#57606a,stroke:#24292f,color:#fff
+    classDef ai fill:#1f6feb,stroke:#0b3d91,color:#fff
+    classDef gate fill:#bf8700,stroke:#7a5600,color:#fff
+    classDef out fill:#2da44e,stroke:#0f5323,color:#fff
+    class V src
+    class AR,CO,ME,LO ai
+    class NUM,B gate
+    class USE out
+```
+
+With `a, b = 10, 3` (the commented block in `31_Arth_Op.py`):
+
+| Expression | Result | What it does |
+|---|---|---|
+| `a + b`, `a - b`, `a * b` | 13, 7, 30 | add, subtract, multiply |
+| `a / b` | 3.3333333333333335 | true division, always a `float` |
+| `a // b` | 3 | floor division: the quotient |
+| `a % b` | 1 | modulus: the remainder |
+| `a ** b` | 1000 | power |
+
+```python
+# 35_IQ.py: / always gives a float, // drops the fraction
+print(5 // 2)   # 2
+print(5 / 2)    # 2.5
+
+# 40.py: Python has no ++ or --, use augmented assignment
+x = 5
+x += 1          # 6
+x -= 1          # 5
+x *= 3          # 15
+
+# 33_Logic_Op.py: and, or, not
+a, b = 5, 10
+print(a > 0 and b > 0)   # True
+print(not (a > 0))       # False
+
+# 41_TP.py: the ternary operator, an if-else on one line
+x, y = 10, 20
+print("x is greater than y" if x > y else "x is less than y")   # x is less than y
+
+# 43_Memship.py: membership returns a bool
+print('a' in 'apple')        # True
+print('b' not in 'apple')    # True
+```
+
+**Q&A - why use this?**
+- **Q: Where will I use these in tests?** A: In every assertion. `assert actual == expected`, `assert "Welcome" in page_title`, `assert status >= 200 and status < 300`: comparison, membership and logical operators, each producing the `True` or `False` that `assert` checks.
+- **Q: Why doesn't `x++` work?** A: Python has no `++` or `--`, so write `x += 1` (`40.py`). `++x` is legal but is just two unary pluses, so it changes nothing.
+- **Q: What's the gotcha?** A: `//` is the quotient and `%` is the remainder (the commented block in `31_Arth_Op.py` labels them the other way round). Also `math.sin(90)` in `43_Memship.py` prints 0.894, not 1, because `math` works in radians: use `math.sin(math.radians(90))`.
+
+#### Conditions (ex_06)
+
+**Concept:** `if`, `elif` and `else` run a block only when its condition is `True`. The
+indentation (4 spaces) marks where the block ends, and an `if` can sit inside another `if`.
+
+**Why:** tests branch too: skip on the wrong browser, take a path based on a status code, fail
+when a value is out of range.
+
+```mermaid
+flowchart TD
+    IN["num1, num2, num3<br/>int(input())"] --> A{"num1 >= num2<br/>and num1 >= num3?"}
+    A -->|Yes| P1["print(num1)"]
+    A -->|No| B{"num2 >= num3<br/>and num2 >= num1?"}
+    B -->|Yes| P2["print(num2)"]
+    B -->|No| P3["print(num3)"]
+
+    classDef src fill:#57606a,stroke:#24292f,color:#fff
+    classDef gate fill:#bf8700,stroke:#7a5600,color:#fff
+    classDef out fill:#2da44e,stroke:#0f5323,color:#fff
+    class IN src
+    class A,B gate
+    class P1,P2,P3 out
+```
+
+```python
+# 45_IfElseIfElse.py: a nested if, even or odd for non-negative numbers only
+num = int(input("Enter a number").strip())   # 7
+
+if num >= 0:
+    if num % 2 == 0:
+        print("Even")
+    else:
+        print("Odd")              # Odd
+else:
+    print("Negative Number!")
+
+# 46.py: elif is checked only when every condition above it was False
+num1 = int(input("Enter the num1\n"))   # 10
+num2 = int(input("Enter the num2\n"))   # 12
+num3 = int(input("Enter the num3\n"))   # 11
+
+if num1 >= num2 and num1 >= num3:
+    print(num1)
+elif num2 >= num3 and num2 >= num1:
+    print(num2)                   # 12
+else:
+    print(num3)
+```
+
+**Q&A - why use this?**
+- **Q: When do I use `elif` and when a nested `if`?** A: `elif` when the branches are one list of alternatives, like the largest of three in `46.py`. Nest when the second question only makes sense after the first, like even or odd only for non-negative numbers in `45_IfElseIfElse.py`.
+- **Q: Is there a shortcut for the largest of three?** A: Yes, the built-in `max(num1, num2, num3)` from ex_04. It is left commented out in `46.py` so you write the logic by hand first.
+- **Q: What's the gotcha?** A: Ties. Swap `>=` for `>` in `46.py` and the inputs 5, 5, 1 print 1: neither 5 beats the other, so both checks fail and `else` prints `num3`. `>=` handles the tie.
+
+### Chapters 16-21: coming next
+
+Chapters 13-15 have landed (above). The other folders are in place, each holding a `.gitkeep`
+until its content lands. After RAG, the course moves to giving LLMs tools (MCP), then the agent frameworks, then measuring whether any
+of it works.
+
+```mermaid
+flowchart LR
+    RAG["Ch 10-12<br/>RAG"] --> MCP["Ch 13-14<br/>MCP"]
+    MCP --> PY["Ch 15<br/>Python + PyTest"]
+    PY --> AG["Ch 16-18<br/>Agent frameworks"]
+    AG --> EV["Ch 19-21<br/>LLM evaluation"]
+
+    classDef src fill:#57606a,stroke:#24292f,color:#fff
+    classDef ai fill:#1f6feb,stroke:#0b3d91,color:#fff
+    classDef gate fill:#bf8700,stroke:#7a5600,color:#fff
+    classDef out fill:#2da44e,stroke:#0f5323,color:#fff
+    class RAG src
+    class MCP,AG ai
+    class PY gate
+    class EV out
+```
+
+| Chapter | Topic | Folder |
+|---|---|---|
+| 16 | AI Agents with CrewAI | `chapter_16_AI_Agent_Crew_AI/` |
+| 17 | AI Agents with LangChain | `chapter_17_AI_Agent_LangChain/` |
+| 18 | AI Agents with LangGraph | `chapter_18_AI_Agent_LangGraph/` |
+| 19 | LLM Evaluation | `chapter_19_LLM_Eval/` |
+| 20 | DeepEval Basics | `chapter_20_DeepEval_Basics/` |
+| 21 | DeepEval Framework | `chapter_21_DeepEval_Framework/` |
 
 ## License
 
