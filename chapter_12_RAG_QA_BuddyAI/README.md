@@ -214,3 +214,6 @@ FastAPI from `requirements.txt` and fails the build.
 * The Docker deployment has not been run end to end yet (no Docker on the build machine).
 * Grounding rules reduce, but do not eliminate, model errors: answers cite sources so a
   human can check them, and the UI flags any answer without citations.
+
+Open work is tracked in [`Todo_List.md`](Todo_List.md) (phase roadmap) and
+[`PENDING_TASKS.md`](PENDING_TASKS.md) (24 prioritised tasks with a "done when" each).
